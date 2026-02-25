@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MarketPulse — Real-Time Stock Dashboard</title>
+    <meta name="description"
+        content="Track stock prices, top gainers & losers, most active stocks, and get smart buy suggestions — all in one real-time dashboard.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <!-- API Key Modal -->
+    <div id="apiModal" class="modal hidden">
+        <div class="modal-overlay"></div>
+        <div class="modal-content">
+            <div class="modal-icon"><i class="fa-solid fa-key"></i></div>
+            <h2>Connect Live Data</h2>
+            <p>Enter your free <a href="https://finnhub.io/register" target="_blank">Finnhub API key</a> to get
+                real-time market data. Or continue in demo mode.</p>
+            <input type="text" id="apiKeyInput" placeholder="Enter Finnhub API key..." autocomplete="off">
+            <div class="modal-actions">
+                <button id="btnSkipApi" class="btn btn-ghost">Continue Demo</button>
+                <button id="btnSaveApi" class="btn btn-primary">Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">
+                <i class="fa-solid fa-chart-line"></i>
+                <span>MarketPulse</span>
+            </div>
+            <span class="badge" id="modeBadge">DEMO</span>
+        </div>
+        <div class="header-center">
+            <div class="search-box">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="text" id="searchInput" placeholder="Search stocks (e.g. AAPL, TSLA)..." autocomplete="off">
+                <div id="searchResults" class="search-results hidden"></div>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="market-status" id="marketStatus">
+                <span class="status-dot"></span>
+                <span class="status-text">Market Closed</span>
+            </div>
+            <button class="btn btn-icon" id="btnTheme" title="Toggle Light/Dark Mode">
+                <i class="fa-solid fa-sun"></i>
+            </button>
+            <button class="btn btn-icon" id="btnSettings" title="API Key Settings">
+                <i class="fa-solid fa-gear"></i>
+            </button>
+            <div class="last-updated" id="lastUpdated">
+                <i class="fa-solid fa-clock"></i>
+                <span>--:--</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="dashboard">
+        <!-- Market Indices Row -->
+        <section class="indices-row" id="indicesRow">
+            <div class="index-card" data-symbol="SPY">
+                <div class="index-name">S&P 500</div>
+                <div class="index-price" id="spy-price">--</div>
+                <div class="index-change" id="spy-change">--</div>
+            </div>
+            <div class="index-card" data-symbol="QQQ">
+                <div class="index-name">NASDAQ</div>
+                <div class="index-price" id="qqq-price">--</div>
+                <div class="index-change" id="qqq-change">--</div>
+            </div>
+            <div class="index-card" data-symbol="DIA">
+                <div class="index-name">DOW JONES</div>
+                <div class="index-price" id="dia-price">--</div>
+                <div class="index-change" id="dia-change">--</div>
+            </div>
+            <div class="index-card" data-symbol="IWM">
+                <div class="index-name">RUSSELL 2000</div>
+                <div class="index-price" id="iwm-price">--</div>
+                <div class="index-change" id="iwm-change">--</div>
+            </div>
+            <div class="index-card" data-symbol="VIX">
+                <div class="index-name">VIX</div>
+                <div class="index-price" id="vix-price">--</div>
+                <div class="index-change" id="vix-change">--</div>
+            </div>
+        </section>
+
+        <!-- Main Grid -->
+        <div class="grid-layout">
+            <!-- Left: Chart Section -->
+            <section class="card chart-card">
+                <div class="card-header">
+                    <div class="card-title-group">
+                        <h2 id="chartStockName">AAPL — Apple Inc.</h2>
+                        <div class="chart-price-info">
+                            <span class="chart-current-price" id="chartCurrentPrice">$0.00</span>
+                            <span class="chart-price-change positive" id="chartPriceChange">+0.00 (+0.00%)</span>
+                        </div>
+                    </div>
+                    <div class="chart-controls">
+                        <button class="chip active" data-range="5d">5D</button>
+                        <button class="chip" data-range="10d">10D</button>
+                        <button class="chip" data-range="1m">1M</button>
+                        <button class="chip" data-range="3m">3M</button>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="priceChart"></canvas>
+                </div>
+                <div class="chart-volume-container">
+                    <canvas id="volumeChart"></canvas>
+                </div>
+            </section>
+
+            <!-- Right: Top Gainers -->
+            <section class="card gainers-card">
+                <div class="card-header">
+                    <h2><i class="fa-solid fa-arrow-trend-up"></i> Top Gainers</h2>
+                    <span class="card-subtitle">Today's best performers</span>
+                </div>
+                <div class="stock-list" id="gainersList">
+                    <div class="loading-placeholder">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right: Top Losers -->
+            <section class="card losers-card">
+                <div class="card-header">
+                    <h2><i class="fa-solid fa-arrow-trend-down"></i> Top Losers</h2>
+                    <span class="card-subtitle">Today's worst performers</span>
+                </div>
+                <div class="stock-list" id="losersList">
+                    <div class="loading-placeholder">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Second Row Grid -->
+        <div class="grid-layout-2">
+            <!-- Most Active -->
+            <section class="card active-card">
+                <div class="card-header">
+                    <h2><i class="fa-solid fa-fire-flame-curved"></i> Most Active</h2>
+                    <span class="card-subtitle">Highest trading volume</span>
+                </div>
+                <div class="active-table-wrapper">
+                    <table class="data-table" id="activeTable">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Price</th>
+                                <th>Change</th>
+                                <th>Volume</th>
+                                <th>Trend</th>
+                            </tr>
+                        </thead>
+                        <tbody id="activeTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Buy Suggestions -->
+            <section class="card suggestions-card">
+                <div class="card-header">
+                    <h2><i class="fa-solid fa-lightbulb"></i> Smart Suggestions</h2>
+                    <span class="card-subtitle">Stocks worth watching</span>
+                </div>
+                <div class="suggestions-list" id="suggestionsList">
+                    <div class="loading-placeholder">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div class="disclaimer">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span>For informational purposes only. Not financial advice. Always do your own research.</span>
+                </div>
+            </section>
+        </div>
+
+        <!-- Market Heatmap / Sector Performance -->
+        <section class="card sector-card">
+            <div class="card-header">
+                <h2><i class="fa-solid fa-chart-pie"></i> Sector Performance</h2>
+                <span class="card-subtitle">How each sector is performing today</span>
+            </div>
+            <div class="sector-grid" id="sectorGrid"></div>
+        </section>
+
+        <!-- Full Stock Table -->
+        <section class="card full-table-card">
+            <div class="card-header">
+                <h2><i class="fa-solid fa-table-list"></i> All Tracked Stocks</h2>
+                <span class="card-subtitle" id="stockCount">0 stocks tracked</span>
+            </div>
+            <div class="full-table-wrapper">
+                <table class="data-table full-table" id="fullTable">
+                    <thead>
+                        <tr>
+                            <th class="sortable" data-sort="symbol">Symbol <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="name">Name <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="price">Price <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="change">Change <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="changePct">% Change <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="volume">Volume <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="high">Day High <i class="fa-solid fa-sort"></i></th>
+                            <th class="sortable" data-sort="low">Day Low <i class="fa-solid fa-sort"></i></th>
+                            <th>Chart</th>
+                        </tr>
+                    </thead>
+                    <tbody id="fullTableBody">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>MarketPulse Dashboard &copy; 2026 — Data provided by <a href="https://finnhub.io" target="_blank">Finnhub</a>
+            | <span id="footerMode">Demo Mode</span></p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
