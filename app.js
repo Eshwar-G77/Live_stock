@@ -124,29 +124,46 @@ function generateDemoData() {
 
 function generatePriceHistory(basePrice, days) {
     const history = [];
-    let price = basePrice * (1 - Math.random() * 0.12); // start slightly lower
+    let price = basePrice * (1 - Math.random() * 0.12);
     const now = new Date();
 
-    for (let i = days; i >= 0; i--) {
-        const date = new Date(now);
-        date.setDate(date.getDate() - i);
+    // Generate data hour by hour (trading hours only, rough approx)
+    let currentDate = new Date(now);
+    currentDate.setDate(currentDate.getDate() - days);
+    currentDate.setHours(9, 30, 0, 0);
+
+    while (currentDate <= now) {
         // Skip weekends
-        if (date.getDay() === 0 || date.getDay() === 6) continue;
+        if (currentDate.getDay() !== 0 && currentDate.getDay() !== 6) {
+            // Trading hours roughly 9:30 to 16:00
+            const h = currentDate.getHours();
+            if ((h > 9 || (h === 9 && currentDate.getMinutes() >= 30)) && h < 16) {
+                const hourlyReturn = (Math.random() - 0.49) * 0.005; // small hourly drift
+                price = price * (1 + hourlyReturn);
+                const hourHigh = price * (1 + Math.random() * 0.005);
+                const hourLow = price * (1 - Math.random() * 0.005);
+                const volume = Math.floor(Math.random() * 8_000_000) + 1_000_000;
 
-        const dailyReturn = (Math.random() - 0.48) * 0.035; // slight upward drift
-        price = price * (1 + dailyReturn);
-        const dayHigh = price * (1 + Math.random() * 0.015);
-        const dayLow = price * (1 - Math.random() * 0.015);
-        const volume = Math.floor(Math.random() * 60_000_000) + 8_000_000;
+                // Format: YYYY-MM-DD HH:mm:ss
+                const pad = (n) => n.toString().padStart(2, '0');
+                const dateStr = `${currentDate.getFullYear()}-${pad(currentDate.getMonth() + 1)}-${pad(currentDate.getDate())} ${pad(currentDate.getHours())}:${pad(currentDate.getMinutes())}:00`;
 
-        history.push({
-            date: date.toISOString().split('T')[0],
-            open: +(price * (1 + (Math.random() - 0.5) * 0.005)).toFixed(2),
-            high: +dayHigh.toFixed(2),
-            low: +dayLow.toFixed(2),
-            close: +price.toFixed(2),
-            volume,
-        });
+                history.push({
+                    date: dateStr,
+                    open: +(price * (1 + (Math.random() - 0.5) * 0.002)).toFixed(2),
+                    high: +hourHigh.toFixed(2),
+                    low: +hourLow.toFixed(2),
+                    close: +price.toFixed(2),
+                    volume,
+                });
+            }
+        }
+        // Advance 1 hour
+        currentDate.setHours(currentDate.getHours() + 1);
+        if (currentDate.getHours() >= 16) {
+            currentDate.setDate(currentDate.getDate() + 1);
+            currentDate.setHours(9, 30, 0, 0);
+        }
     }
     return history;
 }
@@ -220,19 +237,25 @@ async function fetchQuote(symbol) {
 
 async function fetchCandles(symbol, fromTs, toTs) {
     try {
+        // Fetch 60-minute resolution instead of Daily (D) for more granular data
         const res = await fetch(
-            `${CONFIG.API_BASE}/stock/candle?symbol=${symbol}&resolution=D&from=${fromTs}&to=${toTs}&token=${CONFIG.API_KEY}`
+            `${CONFIG.API_BASE}/stock/candle?symbol=${symbol}&resolution=60&from=${fromTs}&to=${toTs}&token=${CONFIG.API_KEY}`
         );
         const d = await res.json();
         if (d.s !== 'ok') return [];
-        return d.t.map((t, i) => ({
-            date: new Date(t * 1000).toISOString().split('T')[0],
-            open: d.o[i],
-            high: d.h[i],
-            low: d.l[i],
-            close: d.c[i],
-            volume: d.v[i],
-        }));
+        return d.t.map((t, i) => {
+            const dateObj = new Date(t * 1000);
+            const pad = (n) => n.toString().padStart(2, '0');
+            const dateStr = `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())} ${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}:00`;
+            return {
+                date: dateStr,
+                open: d.o[i],
+                high: d.h[i],
+                low: d.l[i],
+                close: d.c[i],
+                volume: d.v[i],
+            };
+        });
     } catch (e) {
         console.warn(`Failed to fetch candles for ${symbol}:`, e);
         return [];
@@ -536,10 +559,7 @@ async function renderChart() {
 
         if (!history.length) return;
 
-        labels = history.map(h => {
-            const d = new Date(h.date);
-            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        });
+        labels = history.map(h => h.date);
         closes = history.map(h => h.close);
         volumes = history.map(h => h.volume);
         volumeColorData = history.map((h, i) => {
@@ -549,6 +569,39 @@ async function renderChart() {
                 : 'rgba(255, 71, 87, 0.3)';
         });
     }
+
+    // Prepare Date objects for tooltips
+    const parsedDates = labels.map((l, i) => {
+        if (!l) return null; // empty label from intraday downsampling
+
+        if (isIntraday) {
+            // "hh:mm AM" -> JS Date (approx for today)
+            const d = new Date();
+            const [time, period] = l.split(' ');
+            if (time && period) {
+                let [hr, min] = time.split(':');
+                hr = parseInt(hr);
+                if (period === 'PM' && hr !== 12) hr += 12;
+                if (period === 'AM' && hr === 12) hr = 0;
+                d.setHours(hr, parseInt(min), 0, 0);
+            }
+            return d;
+        } else {
+            // "YYYY-MM-DD HH:mm:ss" -> JS Date
+            const parts = l.split(' ');
+            if (parts.length === 2) {
+                const [y, m, d] = parts[0].split('-');
+                const [hr, min] = parts[1].split(':');
+                return new Date(y, m - 1, d, hr, min);
+            }
+            return new Date(l);
+        }
+    });
+
+    const todayDateStr = new Date().toLocaleDateString('en-US');
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayDateStr = yesterdayDate.toLocaleDateString('en-US');
 
     const isPositive = closes[closes.length - 1] >= closes[0];
     const lineColor = isPositive ? '#00d4aa' : '#ff4757';
@@ -593,6 +646,20 @@ async function renderChart() {
                     padding: 12,
                     displayColors: false,
                     callbacks: {
+                        title: (ctx) => {
+                            const rawIndex = ctx[0].dataIndex;
+                            const dateObj = parsedDates[rawIndex];
+                            if (!dateObj || isNaN(dateObj)) return ctx[0].label;
+
+                            const pointDateStr = dateObj.toLocaleDateString('en-US');
+                            let prefix = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+                            if (pointDateStr === todayDateStr) prefix = 'Today';
+                            else if (pointDateStr === yesterdayDateStr) prefix = 'Yesterday';
+
+                            const timeStr = dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+                            return `${prefix} at ${timeStr}`;
+                        },
                         label: ctx => `$${ctx.parsed.y.toFixed(2)}`,
                     },
                 },
@@ -602,10 +669,22 @@ async function renderChart() {
                     grid: { color: 'rgba(148, 163, 184, 0.06)' },
                     ticks: {
                         color: '#64748b',
-                        font: { size: 11, family: isIntraday ? 'JetBrains Mono' : 'Inter' },
+                        font: { size: 11, family: isIntraday || currentChartRange === '5d' ? 'JetBrains Mono' : 'Inter' },
                         maxTicksLimit: isIntraday ? 13 : 8,
                         autoSkip: true,
                         maxRotation: 0,
+                        callback: function (val, index) {
+                            if (isIntraday) return labels[index];
+
+                            const dateObj = parsedDates[index];
+                            if (!dateObj || isNaN(dateObj)) return labels[index];
+
+                            // Only show time if it's a 5d chart, else show Date
+                            if (currentChartRange === '5d') {
+                                return dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(' ', '');
+                            }
+                            return dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        }
                     },
                     border: { display: false },
                 },
