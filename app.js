@@ -8,7 +8,7 @@ const CONFIG = {
     API_BASE: 'https://finnhub.io/api/v1',
     REFRESH_INTERVAL: 30000,  // 30 seconds
     DEMO_MODE: false,
-    API_KEY: 'd6fhva9r01qjq8n1ni70',
+    API_KEY: 'd6fjnepr01qjq8n1u8ggd6fjnepr01qjq8n1u8h0',
 };
 
 // ---- Stock Universe -----------------------------------------
