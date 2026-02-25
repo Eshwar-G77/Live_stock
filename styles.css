@@ -376,6 +376,25 @@ a:hover {
     font-size: 0.8rem;
 }
 
+.sr-badge {
+    padding: 0.15rem 0.5rem;
+    border-radius: 100px;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: var(--accent-purple);
+    color: #fff;
+    flex-shrink: 0;
+}
+
+.search-no-results {
+    padding: 1rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
 /* Market Status */
 .market-status {
     display: flex;

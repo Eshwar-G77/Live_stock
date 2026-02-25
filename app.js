@@ -99,8 +99,12 @@ function generateDemoData() {
         const low = +(price - Math.random() * price * 0.02).toFixed(2);
         const volume = Math.floor(Math.random() * 80_000_000) + 5_000_000;
 
-        // Generate history for chart (up to 90 days back)
-        const history = generatePriceHistory(basePrice, 90);
+        // Generate history for chart (up to 30 days back)
+        const history = generatePriceHistory(basePrice, 30);
+
+        // Generate intraday minute-level data for today and yesterday (12:00 AM to 12:00 PM)
+        const intradayToday = generateIntradayHistory(price, 0);
+        const intradayYesterday = generateIntradayHistory(basePrice, 1);
 
         stockData[sym] = {
             price,
@@ -112,6 +116,8 @@ function generateDemoData() {
             open: +(basePrice + (Math.random() - 0.5) * 2).toFixed(2),
             prevClose: basePrice,
             history,
+            intradayToday,
+            intradayYesterday,
         };
     });
 }
@@ -143,6 +149,39 @@ function generatePriceHistory(basePrice, days) {
         });
     }
     return history;
+}
+
+// Generate minute-by-minute intraday data from 00:00 to 12:00 (720 data points)
+function generateIntradayHistory(basePrice, daysAgo) {
+    const data = [];
+    let price = basePrice * (1 + (Math.random() - 0.5) * 0.01);
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() - daysAgo);
+    const year = targetDate.getFullYear();
+    const month = targetDate.getMonth();
+    const day = targetDate.getDate();
+
+    for (let minute = 0; minute < 720; minute++) {
+        const hour = Math.floor(minute / 60);
+        const min = minute % 60;
+        const timestamp = new Date(year, month, day, hour, min, 0);
+
+        // Small random walk for each minute
+        const microReturn = (Math.random() - 0.498) * 0.003;
+        price = price * (1 + microReturn);
+
+        const vol = Math.floor(Math.random() * 500_000) + 50_000;
+
+        data.push({
+            time: timestamp.toISOString(),
+            label: `${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`,
+            close: +price.toFixed(2),
+            volume: vol,
+            high: +(price * (1 + Math.random() * 0.001)).toFixed(2),
+            low: +(price * (1 - Math.random() * 0.001)).toFixed(2),
+        });
+    }
+    return data;
 }
 
 function generateIndexData() {
@@ -200,6 +239,39 @@ async function fetchCandles(symbol, fromTs, toTs) {
     }
 }
 
+// Fetch 1-minute intraday candles for a specific date (00:00 to 12:00)
+async function fetchIntradayCandles(symbol, daysAgo) {
+    try {
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() - daysAgo);
+        targetDate.setHours(0, 0, 0, 0);
+        const fromTs = Math.floor(targetDate.getTime() / 1000);
+        const toDate = new Date(targetDate);
+        toDate.setHours(12, 0, 0, 0);
+        const toTs = Math.floor(toDate.getTime() / 1000);
+
+        const res = await fetch(
+            `${CONFIG.API_BASE}/stock/candle?symbol=${symbol}&resolution=1&from=${fromTs}&to=${toTs}&token=${CONFIG.API_KEY}`
+        );
+        const d = await res.json();
+        if (d.s !== 'ok') return [];
+        return d.t.map((t, i) => {
+            const dt = new Date(t * 1000);
+            return {
+                time: dt.toISOString(),
+                label: `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`,
+                close: d.c[i],
+                high: d.h[i],
+                low: d.l[i],
+                volume: d.v[i],
+            };
+        });
+    } catch (e) {
+        console.warn(`Failed to fetch intraday candles for ${symbol}:`, e);
+        return [];
+    }
+}
+
 async function loadLiveData() {
     const symbols = Object.keys(STOCKS);
     // Fetch quotes in small batches to respect rate limits (60/min)
@@ -211,11 +283,11 @@ async function loadLiveData() {
             if (quote && quote.price > 0) {
                 // Try fetching candle history; fall back to generated data
                 const now = Math.floor(Date.now() / 1000);
-                const from = now - 90 * 24 * 60 * 60;
+                const from = now - 30 * 24 * 60 * 60;
                 let history = await fetchCandles(sym, from, now);
                 if (!history || history.length < 5) {
                     // Generate synthetic history based on real current price
-                    history = generatePriceHistory(quote.price, 90);
+                    history = generatePriceHistory(quote.price, 30);
                 }
                 // Estimate volume if not provided
                 if (!quote.volume || quote.volume === 0) {
@@ -400,9 +472,9 @@ function drawMiniChart(sym, data) {
 }
 
 // ---- Main Chart ----
-function renderChart() {
+async function renderChart() {
     const data = stockData[currentChartSymbol];
-    if (!data || !data.history) return;
+    if (!data) return;
 
     const info = STOCKS[currentChartSymbol] || { name: currentChartSymbol };
 
@@ -417,19 +489,66 @@ function renderChart() {
     changeEl.textContent = `${sign}${data.change.toFixed(2)} (${sign}${data.changePct.toFixed(2)}%)`;
     changeEl.className = `chart-price-change ${data.changePct >= 0 ? 'positive' : 'negative'}`;
 
-    // Slice history for selected range
-    const rangeDays = { '5d': 5, '10d': 10, '1m': 22, '3m': 66 };
-    const days = rangeDays[currentChartRange] || 10;
-    const history = data.history.slice(-days);
+    let labels, closes, volumes, volumeColorData;
 
-    if (!history.length) return;
+    const isIntraday = currentChartRange === 'today' || currentChartRange === 'yesterday';
 
-    const labels = history.map(h => {
-        const d = new Date(h.date);
-        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    });
-    const closes = history.map(h => h.close);
-    const volumes = history.map(h => h.volume);
+    if (isIntraday) {
+        // --- Intraday: minute-level data from 12:00 AM to 12:00 PM ---
+        const daysAgo = currentChartRange === 'today' ? 0 : 1;
+        let intradayData;
+
+        if (CONFIG.DEMO_MODE) {
+            intradayData = daysAgo === 0 ? data.intradayToday : data.intradayYesterday;
+            // Generate if missing (e.g. for dynamically added stocks)
+            if (!intradayData) {
+                intradayData = generateIntradayHistory(data.price, daysAgo);
+                if (daysAgo === 0) data.intradayToday = intradayData;
+                else data.intradayYesterday = intradayData;
+            }
+        } else {
+            // Live mode: fetch intraday candles from Finnhub
+            intradayData = await fetchIntradayCandles(currentChartSymbol, daysAgo);
+            if (!intradayData || intradayData.length < 5) {
+                // Fallback to generated data
+                intradayData = generateIntradayHistory(data.price, daysAgo);
+            }
+        }
+
+        if (!intradayData || !intradayData.length) return;
+
+        // Show every 30th label to avoid overcrowding (every 30 minutes)
+        labels = intradayData.map((d, i) => (i % 30 === 0) ? d.label : '');
+        closes = intradayData.map(d => d.close);
+        volumes = intradayData.map(d => d.volume);
+        volumeColorData = intradayData.map((d, i) => {
+            if (i === 0) return 'rgba(59, 130, 246, 0.3)';
+            return d.close >= intradayData[i - 1].close
+                ? 'rgba(0, 212, 170, 0.3)'
+                : 'rgba(255, 71, 87, 0.3)';
+        });
+    } else {
+        // --- Daily range: 5d / 10d ---
+        if (!data.history) return;
+        const rangeDays = { '5d': 5, '10d': 10 };
+        const days = rangeDays[currentChartRange] || 10;
+        const history = data.history.slice(-days);
+
+        if (!history.length) return;
+
+        labels = history.map(h => {
+            const d = new Date(h.date);
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        });
+        closes = history.map(h => h.close);
+        volumes = history.map(h => h.volume);
+        volumeColorData = history.map((h, i) => {
+            if (i === 0) return 'rgba(59, 130, 246, 0.3)';
+            return h.close >= history[i - 1].close
+                ? 'rgba(0, 212, 170, 0.3)'
+                : 'rgba(255, 71, 87, 0.3)';
+        });
+    }
 
     const isPositive = closes[closes.length - 1] >= closes[0];
     const lineColor = isPositive ? '#00d4aa' : '#ff4757';
@@ -451,7 +570,7 @@ function renderChart() {
                 backgroundColor: fillColor,
                 borderWidth: 2.5,
                 pointRadius: 0,
-                pointHoverRadius: 6,
+                pointHoverRadius: isIntraday ? 3 : 6,
                 pointHoverBackgroundColor: lineColor,
                 pointHoverBorderColor: '#fff',
                 pointHoverBorderWidth: 2,
@@ -481,7 +600,13 @@ function renderChart() {
             scales: {
                 x: {
                     grid: { color: 'rgba(148, 163, 184, 0.06)' },
-                    ticks: { color: '#64748b', font: { size: 11, family: 'Inter' }, maxTicksLimit: 8 },
+                    ticks: {
+                        color: '#64748b',
+                        font: { size: 11, family: isIntraday ? 'JetBrains Mono' : 'Inter' },
+                        maxTicksLimit: isIntraday ? 13 : 8,
+                        autoSkip: true,
+                        maxRotation: 0,
+                    },
                     border: { display: false },
                 },
                 y: {
@@ -490,7 +615,7 @@ function renderChart() {
                     ticks: {
                         color: '#64748b',
                         font: { size: 11, family: 'JetBrains Mono' },
-                        callback: v => '$' + v.toFixed(0),
+                        callback: v => '$' + v.toFixed(2),
                     },
                     border: { display: false },
                 },
@@ -506,12 +631,7 @@ function renderChart() {
             labels,
             datasets: [{
                 data: volumes,
-                backgroundColor: history.map((h, i) => {
-                    if (i === 0) return 'rgba(59, 130, 246, 0.3)';
-                    return h.close >= history[i - 1].close
-                        ? 'rgba(0, 212, 170, 0.3)'
-                        : 'rgba(255, 71, 87, 0.3)';
-                }),
+                backgroundColor: volumeColorData,
                 borderRadius: 2,
             }],
         },
@@ -750,44 +870,151 @@ function selectStock(symbol) {
     document.querySelector('.chart-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// ---- Search ----
+// ---- Search (Finnhub /search API for global companies) ----
+let searchDebounceTimer = null;
+
+async function searchSymbols(query) {
+    // If in demo mode or no API key, search local STOCKS first
+    const localMatches = Object.entries(STOCKS)
+        .filter(([sym, info]) => sym.toUpperCase().includes(query.toUpperCase()) || info.name.toUpperCase().includes(query.toUpperCase()))
+        .map(([sym, info]) => ({ symbol: sym, description: info.name, type: 'local' }))
+        .slice(0, 5);
+
+    if (CONFIG.DEMO_MODE) {
+        return localMatches;
+    }
+
+    // Fetch from Finnhub /search API for global results
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/search?q=${encodeURIComponent(query)}&token=${CONFIG.API_KEY}`);
+        const data = await res.json();
+        const apiResults = (data.result || [])
+            .filter(r => r.type === 'Common Stock' || r.type === 'ETP' || r.type === 'ADR')
+            .slice(0, 10)
+            .map(r => ({ symbol: r.symbol, description: r.description, type: 'api' }));
+
+        // Merge: local matches first, then API results (deduplicated)
+        const seen = new Set(localMatches.map(m => m.symbol));
+        const merged = [...localMatches];
+        for (const r of apiResults) {
+            if (!seen.has(r.symbol)) {
+                merged.push(r);
+                seen.add(r.symbol);
+            }
+        }
+        return merged.slice(0, 10);
+    } catch (e) {
+        console.warn('Search API failed, using local results:', e);
+        return localMatches;
+    }
+}
+
 function setupSearch() {
     const input = document.getElementById('searchInput');
     const results = document.getElementById('searchResults');
 
     input.addEventListener('input', () => {
-        const q = input.value.trim().toUpperCase();
+        const q = input.value.trim();
         if (!q) {
             results.classList.add('hidden');
+            if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
             return;
         }
 
-        const matches = Object.entries(STOCKS)
-            .filter(([sym, info]) => sym.includes(q) || info.name.toUpperCase().includes(q))
-            .slice(0, 8);
+        // Debounce API calls
+        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(async () => {
+            const matches = await searchSymbols(q);
 
-        if (!matches.length) {
-            results.classList.add('hidden');
-            return;
-        }
+            if (!matches.length) {
+                results.innerHTML = `<div class="search-no-results">No results found for "${q}"</div>`;
+                results.classList.remove('hidden');
+                return;
+            }
 
-        results.classList.remove('hidden');
-        results.innerHTML = matches.map(([sym, info]) => `
-            <div class="search-result-item" data-symbol="${sym}">
-                <div>
-                    <span class="sr-symbol">${sym}</span>
-                    <span class="sr-name"> — ${info.name}</span>
+            results.classList.remove('hidden');
+            results.innerHTML = matches.map(m => `
+                <div class="search-result-item" data-symbol="${m.symbol}" data-type="${m.type}">
+                    <div>
+                        <span class="sr-symbol">${m.symbol}</span>
+                        <span class="sr-name"> — ${m.description}</span>
+                    </div>
+                    ${m.type === 'api' && !STOCKS[m.symbol] ? '<span class="sr-badge">Global</span>' : ''}
                 </div>
-            </div>
-        `).join('');
+            `).join('');
 
-        results.querySelectorAll('.search-result-item').forEach(el => {
-            el.addEventListener('click', () => {
-                selectStock(el.dataset.symbol);
-                input.value = '';
-                results.classList.add('hidden');
+            results.querySelectorAll('.search-result-item').forEach(el => {
+                el.addEventListener('click', async () => {
+                    const sym = el.dataset.symbol;
+                    const symType = el.dataset.type;
+                    input.value = '';
+                    results.classList.add('hidden');
+
+                    // If stock is not in our local data, fetch it
+                    if (!stockData[sym]) {
+                        const matchData = matches.find(m => m.symbol === sym);
+                        // Add to STOCKS dictionary
+                        if (!STOCKS[sym]) {
+                            STOCKS[sym] = { name: matchData?.description || sym, sector: 'Other' };
+                        }
+
+                        if (CONFIG.DEMO_MODE) {
+                            // Generate demo data for this stock
+                            const basePrice = 50 + Math.random() * 200;
+                            const changePct = (Math.random() - 0.45) * 8;
+                            const change = basePrice * changePct / 100;
+                            const price = +(basePrice + change).toFixed(2);
+                            stockData[sym] = {
+                                price,
+                                change: +change.toFixed(2),
+                                changePct: +changePct.toFixed(2),
+                                volume: Math.floor(Math.random() * 80_000_000) + 5_000_000,
+                                high: +(price * 1.02).toFixed(2),
+                                low: +(price * 0.98).toFixed(2),
+                                open: +(basePrice + (Math.random() - 0.5) * 2).toFixed(2),
+                                prevClose: basePrice,
+                                history: generatePriceHistory(basePrice, 30),
+                                intradayToday: generateIntradayHistory(price, 0),
+                                intradayYesterday: generateIntradayHistory(basePrice, 1),
+                            };
+                        } else {
+                            // Fetch live data
+                            const quote = await fetchQuote(sym);
+                            if (quote && quote.price > 0) {
+                                const now = Math.floor(Date.now() / 1000);
+                                const from = now - 30 * 24 * 60 * 60;
+                                let history = await fetchCandles(sym, from, now);
+                                if (!history || history.length < 5) {
+                                    history = generatePriceHistory(quote.price, 30);
+                                }
+                                if (!quote.volume || quote.volume === 0) {
+                                    quote.volume = Math.floor(Math.random() * 60_000_000) + 10_000_000;
+                                }
+                                stockData[sym] = { ...quote, history };
+                            } else {
+                                // Fallback to generated data
+                                const basePrice = 100;
+                                stockData[sym] = {
+                                    price: basePrice,
+                                    change: 0,
+                                    changePct: 0,
+                                    volume: 10_000_000,
+                                    high: basePrice * 1.01,
+                                    low: basePrice * 0.99,
+                                    open: basePrice,
+                                    prevClose: basePrice,
+                                    history: generatePriceHistory(basePrice, 30),
+                                    intradayToday: generateIntradayHistory(basePrice, 0),
+                                    intradayYesterday: generateIntradayHistory(basePrice, 1),
+                                };
+                            }
+                        }
+                    }
+
+                    selectStock(sym);
+                });
             });
-        });
+        }, 300);
     });
 
     // Close on click outside
@@ -800,7 +1027,20 @@ function setupSearch() {
 
 // ---- Chart Range Toggles ----
 function setupChartControls() {
+    // Set dynamic date labels for Today / Yesterday buttons
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    const formatDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
     document.querySelectorAll('.chip[data-range]').forEach(btn => {
+        if (btn.dataset.range === 'today') {
+            btn.textContent = `Today (${formatDate(today)})`;
+        } else if (btn.dataset.range === 'yesterday') {
+            btn.textContent = `Yesterday (${formatDate(yesterday)})`;
+        }
+
         btn.addEventListener('click', () => {
             document.querySelectorAll('.chip[data-range]').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
